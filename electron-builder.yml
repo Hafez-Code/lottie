@@ -1,0 +1,20 @@
+appId: studio.diffusion.lottie
+productName: Diffusion Studio
+directories:
+  output: release
+files:
+  - dist/**/*
+  - electron/**/*
+  - shared/**/*
+  - "!**/*.map"
+extraResources:
+  - from: public
+    to: public
+asarUnpack:
+  - "**/*.wasm"
+mac:
+  identity: null
+  category: public.app-category.graphics-design
+  target:
+    - dir
+  darkModeSupport: true

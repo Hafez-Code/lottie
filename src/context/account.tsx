@@ -6,7 +6,6 @@ export type Plan = "free" | "pro" | "studio";
 export interface UsageEntry {
   id: number;
   label: string;
-  model: string;
   credits: number;
   at: number; // epoch ms
 }
@@ -57,9 +56,9 @@ const DEFAULT_STATE: AccountState = {
     { provider: "github", connected: false },
   ],
   usage: [
-    { id: 1, label: "Scene edit — Golden Ocean", model: "GPT-5.5", credits: 4, at: Date.now() - 6 * 60_000 },
-    { id: 2, label: "Vertical re-cut for social", model: "GPT-5.5", credits: 9, at: Date.now() - 3 * 3_600_000 },
-    { id: 3, label: "Caption pass — Movies", model: "GPT-5 mini", credits: 2, at: Date.now() - 26 * 3_600_000 },
+    { id: 1, label: "Scene edit — Golden Ocean", credits: 4, at: Date.now() - 6 * 60_000 },
+    { id: 2, label: "Vertical re-cut for social", credits: 9, at: Date.now() - 3 * 3_600_000 },
+    { id: 3, label: "Caption pass — Movies", credits: 2, at: Date.now() - 26 * 3_600_000 },
   ],
 };
 
@@ -100,7 +99,7 @@ interface AccountContextValue {
   unlink(provider: "google" | "github"): void;
   setAgent(id: string, enabled: boolean): void;
   enableAllAgents(enabled: boolean): void;
-  spendCredits(amount: number, label: string, model: string): void;
+  spendCredits(amount: number, label: string): void;
   upgradeTo(plan: Exclude<Plan, "free">): void;
 }
 
@@ -151,11 +150,10 @@ export function AccountProvider(props: { children: JSX.Element }) {
       update({
         agents: Object.fromEntries(Object.keys(state().agents).map((id) => [id, enabled])),
       }),
-    spendCredits: (amount, label, model) => {
+    spendCredits: (amount, label) => {
       const entry: UsageEntry = {
         id: Date.now(),
         label,
-        model,
         credits: amount,
         at: Date.now(),
       };

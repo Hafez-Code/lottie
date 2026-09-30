@@ -1,4 +1,4 @@
-import { Accessor, createContext, createSignal, useContext, type JSX } from "solid-js";
+import { Accessor, createContext, createSignal, onMount, useContext, type JSX } from "solid-js";
 
 const UIContext = createContext<{
   controlsExpanded: Accessor<boolean>;
@@ -8,6 +8,13 @@ const UIContext = createContext<{
 export function UIProvider(props: { children: JSX.Element }) {
   const [controlsExpanded, setControlsExpanded] = createSignal(true);
   const toggleControls = () => setControlsExpanded((v) => !v);
+
+  // Native menu (Electron) drives the same toggle.
+  onMount(() => {
+    const handler = () => setControlsExpanded((v) => !v);
+    window.addEventListener("diffusion:toggle-controls", handler);
+    return () => window.removeEventListener("diffusion:toggle-controls", handler);
+  });
 
   return (
     <UIContext.Provider value={{ controlsExpanded, toggleControls }}>

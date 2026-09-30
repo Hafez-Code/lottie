@@ -19,6 +19,8 @@ export interface Scene {
   lottie: string;
   /** Public URL of the scene's controls.json, when present. */
   controls?: string;
+  /** Public URL of the scene's brief.json (chat description + reference images), when present. */
+  brief?: string;
   /** Public URLs of image assets in the scene folder. */
   images: string[];
   /** Public URLs of font files (.ttf/.otf/.ttc) in the scene folder. */

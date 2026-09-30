@@ -1,14 +1,22 @@
 {
   "name": "text-to-lottie",
+  "productName": "Diffusion Studio",
   "private": true,
   "version": "1.0.0",
   "license": "MIT",
   "type": "module",
+  "main": "electron/main.cjs",
+  "bin": {
+    "diffusion-studio": "cli/diffusion-studio.mjs"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "check:text-slots": "node --experimental-strip-types --test scripts/text-slot-unicode.test.mjs",
     "preview": "vite preview",
+    "electron:dev": "node scripts/electron-dev.mjs",
+    "electron:start": "npm run build && electron .",
+    "dist:mac": "npm run build && electron-builder --mac dir",
     "postinstall": "node scripts/copy-canvaskit.mjs"
   },
   "dependencies": {
@@ -29,6 +37,8 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.13",
     "@types/node": "^25.9.2",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
     "solid-devtools": "^0.34.3",
     "tailwindcss": "^4.1.13",
     "typescript": "^5.9.2",

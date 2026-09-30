@@ -1,6 +1,6 @@
-import { createSignal, For, Show } from "solid-js";
+import { createSignal, For, Show, onMount, onCleanup } from "solid-js";
 import { useNavigate, useParams } from "@solidjs/router";
-import { Trash } from "lucide-solid";
+import { ChevronDown, Download, Trash } from "lucide-solid";
 import { Icon } from "@/components/ui/icon";
 import {
   ContextMenu,
@@ -8,8 +8,19 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useScenes } from "@/context/scenes";
 import { useUI } from "@/context/ui";
+import { useToast } from "@/components/ui/toast";
 import { Button } from "./ui/button";
 
 import type { Project } from "@/types";
@@ -17,15 +28,80 @@ import type { Project } from "@/types";
 export function SidebarLeft() {
   const params = useParams();
   const navigate = useNavigate();
-  const { projects } = useScenes();
+  const { projects, findProject, findScene } = useScenes();
   const { controlsExpanded, toggleControls } = useUI();
+  const { toast } = useToast();
   const [creating, setCreating] = createSignal(false);
   const [name, setName] = createSignal("New project");
+
+  const activeProject = () => findProject(params.project ?? "");
+  const activeLabel = () => activeProject()?.label ?? "Dashboard";
+
+  // ⇧⌘D — go to dashboard.
+  onMount(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.metaKey && e.shiftKey && (e.key === "d" || e.key === "D")) {
+        e.preventDefault();
+        navigate("/");
+      }
+    };
+    window.addEventListener("keydown", handler);
+    onCleanup(() => window.removeEventListener("keydown", handler));
+  });
+
+  const downloadSceneJson = async () => {
+    const scene = findScene(params.project ?? "", params.scene ?? "");
+    if (!scene) {
+      toast("Open a scene first.");
+      return;
+    }
+    try {
+      const res = await fetch(scene.lottie);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${params.project}-${params.scene}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast("Scene JSON downloaded.");
+    } catch {
+      toast("Could not download the scene JSON.");
+    }
+  };
+
+  const copyProjectPath = async () => {
+    try {
+      await navigator.clipboard.writeText(`/${params.project ?? ""}/${params.scene ?? ""}`);
+      toast("Scene path copied.");
+    } catch {
+      toast("Could not access the clipboard.");
+    }
+  };
 
   const handleBlur = () => {
     setCreating(false);
     setName("New project");
   }
+
+  const createProject = async (projectName: string): Promise<boolean> => {
+    const res = await fetch("/__scenes/project", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: projectName }),
+    });
+    const { project, scene } = (await res.json()) as { project: string; scene: string };
+    navigate(`/${project}/${scene}`);
+    return true;
+  };
+
+  const createNewProject = async () => {
+    try {
+      await createProject("Untitled project");
+    } catch {
+      toast("Could not create the project (dev server only).");
+    }
+  };
 
   const handleKeyDown = async (e: KeyboardEvent) => {
     if (e.key === "Escape") {
@@ -38,13 +114,11 @@ export function SidebarLeft() {
       handleBlur();
 
       if (value) {
-        const res = await fetch("/__scenes/project", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: value }),
-        });
-        const { project, scene } = (await res.json()) as { project: string; scene: string };
-        navigate(`/${project}/${scene}`);
+        try {
+          await createProject(value);
+        } catch {
+          toast("Could not create the project.");
+        }
       }
     }
   }
@@ -76,10 +150,64 @@ export function SidebarLeft() {
       }}
     >
       <div class="flex items-center justify-between h-12 px-3">
-        <div class="flex items-center justify-center gap-1">
-          <Icon name="diffusion-logo" class="size-6" />
-          <span class="text-xxs font-strong">Diffusion Studio</span>
-        </div>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            as="button"
+            class="flex items-center justify-center gap-1 rounded-md px-1 aria-expanded:bg-muted"
+          >
+            <Icon name="diffusion-logo" class="size-6" />
+            <span class="text-xxs font-strong">{activeLabel()}</span>
+            <ChevronDown class="text-muted-foreground size-3" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent class="w-56">
+            <DropdownMenuItem onSelect={() => navigate("/")}>
+              <span>Go to dashboard</span>
+              <span class="text-muted-foreground ml-auto text-xxs tracking-wider">⇧⌘D</span>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>File</DropdownMenuSubTrigger>
+              <DropdownMenuSubContent class="w-48">
+                <DropdownMenuItem onSelect={() => createNewProject()}>
+                  <span>New project</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={downloadSceneJson}>
+                  <Download />
+                  <span>Download scene JSON</span>
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>Edit</DropdownMenuSubTrigger>
+              <DropdownMenuSubContent class="w-32">
+                <DropdownMenuItem data-disabled>Undo</DropdownMenuItem>
+                <DropdownMenuItem data-disabled>Redo</DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>View</DropdownMenuSubTrigger>
+              <DropdownMenuSubContent class="w-48">
+                <DropdownMenuItem onSelect={toggleControls}>
+                  <span>Toggle controls</span>
+                  <ChevronDown class="ml-auto hidden" />
+                  <span class="text-muted-foreground ml-auto text-xxs">{controlsExpanded() ? "On" : "Off"}</span>
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>Tool</DropdownMenuSubTrigger>
+              <DropdownMenuSubContent class="w-48">
+                <DropdownMenuItem onSelect={copyProjectPath}>
+                  <span>Copy scene path</span>
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => navigate("/settings/credits")}>AI credits</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => navigate("/settings/help")}>Help</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => navigate("/settings/account")}>Account</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <Button size="icon" variant="ghost" onClick={toggleControls}>
           <Icon name="sidebar" />
         </Button>

@@ -2,10 +2,11 @@ import type { ValidComponent } from "solid-js";
 import { splitProps } from "solid-js";
 import type { PolymorphicProps } from "@kobalte/core/polymorphic";
 import * as TextFieldPrimitive from "@kobalte/core/text-field";
+import type { JSX } from "solid-js";
 import { cn } from "@/lib/utils";
 
 type InputProps<T extends ValidComponent = "input"> =
-  PolymorphicProps<T, TextFieldPrimitive.InputProps<T>> & { class?: string };
+  PolymorphicProps<T, TextFieldPrimitive.TextFieldInputProps<T>> & { class?: string };
 
 const Input = <T extends ValidComponent = "input">(props: InputProps<T>) => {
   const [local, others] = splitProps(props as InputProps, ["class"]);
@@ -18,13 +19,12 @@ const Input = <T extends ValidComponent = "input">(props: InputProps<T>) => {
   );
 };
 
-type TextareaProps<T extends ValidComponent = "textarea"> =
-  PolymorphicProps<T, TextFieldPrimitive.TextAreaProps<T>> & { class?: string };
+type TextareaProps = JSX.TextareaHTMLAttributes<HTMLTextAreaElement> & { class?: string; value?: string };
 
-const Textarea = <T extends ValidComponent = "textarea">(props: TextareaProps<T>) => {
-  const [local, others] = splitProps(props as TextareaProps, ["class"]);
+const Textarea = (props: TextareaProps) => {
+  const [local, others] = splitProps(props, ["class"]);
   return (
-    <TextFieldPrimitive.TextArea
+    <textarea
       data-slot="textarea"
       class={cn(
         "z-input flex min-h-16 w-full py-2 text-left",
@@ -35,13 +35,13 @@ const Textarea = <T extends ValidComponent = "textarea">(props: TextareaProps<T>
   );
 };
 
-type TextFieldProps = TextFieldPrimitive.TextFieldRootProps & { class?: string };
+type TextFieldProps = TextFieldPrimitive.TextFieldRootProps & { class?: string; children?: JSX.Element };
 
 const TextField = (props: TextFieldProps) => {
-  const [local, others] = splitProps(props, ["class"]);
+  const [local, others] = splitProps(props, ["class", "children"]);
   return (
     <TextFieldPrimitive.Root data-slot="textfield" class={cn("flex flex-col gap-1.5", local.class)} {...others}>
-      {props.children}
+      {local.children}
     </TextFieldPrimitive.Root>
   );
 };

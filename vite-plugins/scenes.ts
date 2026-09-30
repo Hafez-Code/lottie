@@ -116,6 +116,51 @@ function createScene(sceneDir: string): void {
   );
 }
 
+const IMAGE_EXT_BY_MIME: Record<string, string> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+  "image/svg+xml": ".svg",
+  "image/avif": ".avif",
+};
+
+/**
+ * Write a chat brief into a scene folder: reference images land flat next to
+ * lottie.json (the layout the scanner expects) and `brief.json` indexes them,
+ * so the connected agent can read the description + images over MCP.
+ */
+function writeSceneBrief(sceneDir: string, brief: Record<string, unknown>): string[] {
+  fs.mkdirSync(sceneDir, { recursive: true });
+  const images = Array.isArray(brief.images) ? brief.images : [];
+  const saved: string[] = [];
+
+  images.forEach((entry, index) => {
+    const dataUrl = String((entry as { dataUrl?: unknown })?.dataUrl ?? "");
+    const match = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/.exec(dataUrl);
+    if (!match) return;
+    const buffer = Buffer.from(match[3], match[2] ? "base64" : "utf8");
+    const ext = IMAGE_EXT_BY_MIME[match[1] ?? ""] ?? ".png";
+    const fileName = `reference-${index + 1}${ext}`;
+    fs.writeFileSync(path.join(sceneDir, fileName), buffer);
+    saved.push(fileName);
+  });
+
+  fs.writeFileSync(
+    path.join(sceneDir, "brief.json"),
+    JSON.stringify(
+      {
+        description: String(brief.description ?? "").trim(),
+        images: saved,
+        createdAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+  return saved;
+}
+
 function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
     let data = "";
@@ -151,6 +196,7 @@ function scanScene(projectSlug: string, sceneSlug: string, sceneDir: string): Sc
     order: sceneOrder(sceneSlug),
     lottie: `${base}/lottie.json`,
     controls: files.includes("controls.json") ? `${base}/controls.json` : undefined,
+    brief: files.includes("brief.json") ? `${base}/brief.json` : undefined,
     images: byExtension(IMAGE_EXTENSIONS),
     fonts: byExtension(FONT_EXTENSIONS),
   };
@@ -329,6 +375,37 @@ export function scenesPlugin(): Plugin {
           return json(res, 200, { ok: true });
         }
         json(res, 405, { error: "method not allowed" });
+      });
+
+      // Create a scene from a chat brief (POST, body: { project?, description, images }).
+      // Images (data URLs) are written flat into the scene folder and indexed by
+      // brief.json. Omit `project` to start a brand-new project.
+      server.middlewares.use("/__scenes/brief", async (req, res) => {
+        if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+        const body = await readJsonBody(req);
+        const description = String(body.description ?? "");
+        const images = Array.isArray(body.images) ? body.images : [];
+        if (!description.trim() && images.length === 0) {
+          return json(res, 400, { error: "Provide a description or at least one image" });
+        }
+
+        let projectSlug = String(body.project ?? "");
+        let projectDir: string;
+        if (projectSlug) {
+          projectDir = path.resolve(projectsDir, projectSlug);
+          if (!projectDir.startsWith(projectsDir + path.sep) || !fs.existsSync(projectDir)) {
+            return json(res, 404, { error: "project not found" });
+          }
+        } else {
+          projectSlug = uniqueDir(projectsDir, slugify(description.split(/\s+/).slice(0, 4).join(" ")));
+          projectDir = path.join(projectsDir, projectSlug);
+        }
+
+        const sceneSlug = nextSceneSlug(projectDir);
+        const sceneDir = path.join(projectDir, sceneSlug);
+        createScene(sceneDir);
+        writeSceneBrief(sceneDir, { description, images });
+        return json(res, 201, { project: projectSlug, scene: sceneSlug });
       });
 
       // Overwrite a scene's lottie.json source. Body: { project, scene, doc }.
