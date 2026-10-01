@@ -6,13 +6,15 @@ import { getCanvasKit } from '@/lib/canvaskit';
 import { loadScene } from '@/lib/scene';
 import { applySlotValues, readTextSlotValue, type LottieDoc } from '@/lib/lottie';
 import { parseLottieFile, createSceneFromDoc } from '@/lib/import';
+import { studioFetch } from '@/lib/studio-api';
+import { isDesktop } from '@/lib/desktop';
 
 import type { CanvasKit, Surface, ManagedSkottieAnimation, Font, Paint, Typeface } from "canvaskit-wasm/full";
 
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 32;
 const ZOOM_SENSITIVITY = 0.003;
-const INITIAL_MARGIN_Y = 100; // CSS px above and below the animation
+const INITIAL_MARGIN_Y = 40; // CSS px above and below the animation
 const LABEL_FONT_SIZE = 11; // CSS px, screen space (does not scale with zoom)
 const LABEL_GAP_Y = 7; // CSS px between the label baseline and the frame
 const LABEL_MIN_WIDTH = 24; // CSS px the label may occupy on a tiny frame
@@ -35,6 +37,14 @@ const CanvasContext = createContext<{
   seek(frame: number): void;
   zoomByCentered(factor: number): void;
   resetCamera(): void;
+  captureFrame(frame?: number): string | null;
+  layers: Accessor<{ index: number; name: string }[]>;
+  selectedLayer: Accessor<{ index: number; name: string } | null>;
+  selectLayer(layer: { index: number; name: string } | null): void;
+  refreshScene(): Promise<void>;
+  inspecting: Accessor<boolean>;
+  toggleInspect(): void;
+  inspectError: Accessor<string>;
 }>();
 
 export function CanvasProvider(props: { children: JSX.Element }) {
@@ -57,6 +67,10 @@ export function CanvasProvider(props: { children: JSX.Element }) {
   const [currentFrame, setCurrentFrame] = createSignal(0);
   const [canvasKit] = createResource(getCanvasKit);
   const [textOverrides, setTextOverrides] = createSignal<Record<string, string>>({});
+  const [selectedLayer, selectLayer] = createSignal<{ index: number; name: string } | null>(null);
+  const [inspecting, setInspecting] = createSignal(false);
+  const [inspectError, setInspectError] = createSignal("");
+  let picking = false;
   const currentScene = createMemo(() => {
     const { project, scene } = params;
     if (!project || !scene) return null;
@@ -72,6 +86,32 @@ export function CanvasProvider(props: { children: JSX.Element }) {
       return null;
     }
   });
+  const layers = createMemo(() => (sourceDoc()?.layers ?? []).map((layer, index) => ({ index, name: layer.nm ?? `Layer ${index + 1}` })));
+  createEffect(() => { currentScene(); selectLayer(null); });
+
+  const captureFrame = (frame = currentFrame()): string | null => {
+    const ck = canvasKit(), anim = animation();
+    if (!ck || !anim) return null;
+    const [w, h] = anim.size();
+    const scale = Math.min(1, 1024 / Math.max(w, h));
+    const snapshotSurface = ck.MakeSurface(Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)));
+    if (!snapshotSurface) return null;
+    try {
+      const target = snapshotSurface.getCanvas();
+      target.clear(ck.TRANSPARENT);
+      anim.seekFrame(Math.max(0, Math.min(frame, totalFrames() - 1)));
+      anim.render(target, ck.LTRBRect(0, 0, Math.round(w * scale), Math.round(h * scale)));
+      snapshotSurface.flush();
+      const image = snapshotSurface.makeImageSnapshot();
+      try {
+        const bytes = image.encodeToBytes(ck.ImageFormat.PNG);
+        if (!bytes) return null;
+        let binary = "";
+        for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+        return `data:image/png;base64,${btoa(binary)}`;
+      } finally { image.delete(); }
+    } finally { snapshotSurface.delete(); anim.seekFrame(currentFrame()); dirty = true; }
+  };
 
   onMount(() => {
     import.meta.hot?.on("scene:source", (data: { lottie: string }) => {
@@ -81,7 +121,7 @@ export function CanvasProvider(props: { children: JSX.Element }) {
     });
   });
 
-  const [controls] = createResource(currentScene, loadControlsMeta);
+  const [controls, { refetch: refetchControls }] = createResource(currentScene, loadControlsMeta);
   const [labelTypeface] = createResource(canvasKit, loadLabelTypeface);
   const [camera, setCamera] = createSignal({
     x: 0,
@@ -278,18 +318,18 @@ export function CanvasProvider(props: { children: JSX.Element }) {
     try {
       doc = JSON.parse(data.json);
     } catch {
-      return;
+      throw new Error("Could not parse the current scene");
     }
     applySlotValues(doc, readSlots(anim, doc, textOverrides()));
 
-    const res = await fetch("/__scenes/lottie", {
+    const res = await studioFetch(isDesktop() ? "/api/lottie" : "/__scenes/lottie", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ project, scene: sceneSlug, doc }),
     });
     if (!res.ok) {
       console.error(`Failed to save lottie source (HTTP ${res.status})`);
-      return;
+      throw new Error(`Could not save scene changes (HTTP ${res.status})`);
     }
 
     sourceDirty = false;
@@ -356,9 +396,60 @@ export function CanvasProvider(props: { children: JSX.Element }) {
 
   const onPointerDown = (e: PointerEvent) => {
     if (e.button !== 0 && e.button !== 1) return; // left or middle drag
+    if (e.button === 0 && inspecting()) { void pickLayer(e.clientX, e.clientY); return; }
     dragging = true;
     canvas.style.cursor = "grabbing";
     dirty = true;
+  };
+
+  const pickLayer = async (clientX: number, clientY: number) => {
+    if (picking) return;
+    const ck = canvasKit(), anim = animation(), data = sceneData();
+    if (!ck || !anim || !data) return;
+    picking = true; setInspectError("");
+    let pickingSurface: Surface | null = null;
+    try {
+      const doc = JSON.parse(data.json);
+      if ((doc.layers ?? []).some((layer: { tt?: number; td?: number }) => layer.tt || layer.td)) throw new Error("For scenes with track mattes, select the layer from the list.");
+      if ((doc.layers?.length ?? 0) > 100) throw new Error("For this large scene, select the layer from the list.");
+      applySlotValues(doc, readSlots(anim, sourceDoc(), textOverrides()));
+      const [w, h] = anim.size();
+      const rect = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+      const { x, y, zoom } = camera();
+      const scale = Math.min(canvas.width / w, canvas.height / h);
+      const left = (canvas.width - w * scale) / 2, top = (canvas.height - h * scale) / 2;
+      const sx = (((clientX - rect.left) * dpr - x) / zoom - left) / (w * scale);
+      const sy = (((clientY - rect.top) * dpr - y) / zoom - top) / (h * scale);
+      if (sx < 0 || sy < 0 || sx >= 1 || sy >= 1) { selectLayer(null); return; }
+      const size = 512;
+      const pw = Math.max(1, Math.round(w * Math.min(1, size / Math.max(w, h))));
+      const ph = Math.max(1, Math.round(h * Math.min(1, size / Math.max(w, h))));
+      pickingSurface = ck.MakeSurface(pw, ph);
+      if (!pickingSurface) throw new Error("Layer picking is unavailable. Select from the list.");
+      const context = pickingSurface.getCanvas();
+      const frame = currentFrame();
+      for (let index = 0; index < (doc.layers?.length ?? 0); index++) {
+        const layer = doc.layers[index];
+        if (layer.hd || layer.ty === 3) continue;
+        const isolated = { ...doc, layers: doc.layers.map((entry: Record<string, unknown>, i: number) => i === index ? entry : { ...entry, ty: 3, hd: true }) };
+        const candidate = ck.MakeManagedAnimation(JSON.stringify(isolated), data.assets);
+        if (!candidate) continue;
+        try {
+          context.clear(ck.TRANSPARENT);
+          candidate.seekFrame(frame);
+          candidate.render(context, ck.LTRBRect(0, 0, pw, ph));
+          const pixels = context.readPixels(Math.floor(sx * pw), Math.floor(sy * ph), { width: 1, height: 1, colorType: ck.ColorType.RGBA_8888, alphaType: ck.AlphaType.Unpremul, colorSpace: ck.ColorSpace.SRGB });
+          if (pixels && pixels[3] > 8) {
+            if (sceneData() === data) selectLayer({ index, name: layer.nm ?? `Layer ${index + 1}` });
+            return;
+          }
+        } finally { candidate.delete(); }
+        if (index % 5 === 0) await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        if (sceneData() !== data) return;
+      }
+      selectLayer(null);
+    } catch (error) { setInspectError(error instanceof Error ? error.message : "Select the layer from the list."); }
+    finally { pickingSurface?.delete(); picking = false; }
   };
 
   const onPointerMove = (e: PointerEvent) => {
@@ -375,7 +466,7 @@ export function CanvasProvider(props: { children: JSX.Element }) {
   const onPointerUp = () => {
     if (!dragging) return;
     dragging = false;
-    canvas.style.cursor = "grab";
+    canvas.style.cursor = inspecting() ? "crosshair" : "grab";
     dirty = true;
   };
 
@@ -440,8 +531,8 @@ export function CanvasProvider(props: { children: JSX.Element }) {
     const cw = canvas.width;
     const ch = canvas.height;
     if (!cw || !ch || !w || !h) return;
-    const dh = h * Math.min(cw / w, ch / h);
-    const zoom = clamp((ch - 2 * INITIAL_MARGIN_Y * dpr) / dh, MIN_ZOOM, MAX_ZOOM);
+    const scale = Math.min(cw / w, ch / h);
+    const zoom = clamp(Math.min((cw - 32 * dpr) / (w * scale), (ch - 2 * INITIAL_MARGIN_Y * dpr) / (h * scale)), MIN_ZOOM, MAX_ZOOM);
     setCamera({
       x: (cw / 2) * (1 - zoom),
       y: (ch / 2) * (1 - zoom),
@@ -571,9 +662,19 @@ export function CanvasProvider(props: { children: JSX.Element }) {
         seek,
         zoomByCentered,
         resetCamera,
+        captureFrame,
+        layers,
+        selectedLayer,
+        selectLayer,
+        refreshScene: async () => { await refetchScene(); await refetchControls(); },
+        inspecting,
+        inspectError,
+        toggleInspect: () => { setInspecting((value) => !value); canvas.style.cursor = inspecting() ? "crosshair" : "grab"; },
       }}>
       <div class="relative h-screen w-screen bg-canvas">
-        <canvas ref={canvas} id="main-canvas" class="block h-full w-full" />
+        <div class="absolute" classList={{ "left-[332px] right-[268px] top-16 bottom-48": !!currentScene(), "inset-0": !currentScene() }}>
+          <canvas ref={canvas} id="main-canvas" class="block h-full w-full" />
+        </div>
         {props.children}
       </div>
     </CanvasContext.Provider>

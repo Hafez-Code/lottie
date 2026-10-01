@@ -53,7 +53,7 @@ function listDirs(dir) {
     .map((entry) => entry.name);
 }
 
-/** Minimal Bodymovin scene: a single `w`x`h` background rect filled with `hex`. */
+/** Minimal Bodymovin scene: a `w`x`h` background rect exposing an editable bgColor slot. */
 function defaultLottie(w, h, hex) {
   const r = Number.parseInt(hex.slice(1, 3), 16) / 255;
   const g = Number.parseInt(hex.slice(3, 5), 16) / 255;
@@ -66,6 +66,10 @@ function defaultLottie(w, h, hex) {
     w,
     h,
     assets: [],
+    // Full-frame scenes expose their background as a color slot (output rubric).
+    slots: {
+      bgColor: { p: { a: 0, k: [r, g, b, 1] } },
+    },
     layers: [
       {
         ty: 4,
@@ -86,7 +90,7 @@ function defaultLottie(w, h, hex) {
             nm: "background-group",
             it: [
               { ty: "rc", p: { a: 0, k: [0, 0] }, s: { a: 0, k: [w, h] }, r: { a: 0, k: 0 } },
-              { ty: "fl", c: { a: 0, k: [r, g, b, 1] }, o: { a: 0, k: 100 } },
+              { ty: "fl", c: { sid: "bgColor" }, o: { a: 0, k: 100 } },
               {
                 ty: "tr",
                 p: { a: 0, k: [0, 0] },
@@ -109,6 +113,10 @@ function createScene(sceneDir, w = 512, h = 512, hex = "#262626") {
     path.join(sceneDir, "lottie.json"),
     JSON.stringify(defaultLottie(w, h, hex), null, 2),
   );
+  // Give the scene one control out of the box so it is editable on arrival.
+  writeJson(path.join(sceneDir, "controls.json"), {
+    controls: [{ sid: "bgColor", label: "Background" }],
+  });
 }
 
 /** Discover all projects/scenes under `projectsDir` into an ordered tree. */
@@ -176,6 +184,9 @@ const IMAGE_EXT_BY_MIME = {
   "image/gif": ".gif",
   "image/svg+xml": ".svg",
   "image/avif": ".avif",
+  "video/mp4": ".mp4",
+  "video/webm": ".webm",
+  "video/quicktime": ".mov",
 };
 
 /**
@@ -189,21 +200,25 @@ function writeSceneBrief(sceneDir, brief = {}) {
   fs.mkdirSync(sceneDir, { recursive: true });
   const images = Array.isArray(brief.images) ? brief.images : [];
   const saved = [];
+  const references = [];
 
   images.forEach((image, index) => {
     const dataUrl = String(image?.dataUrl ?? "");
     const match = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/.exec(dataUrl);
-    if (!match) return;
+    if (!match || !IMAGE_EXT_BY_MIME[match[1]]) throw new Error("Unsupported reference file type");
     const buffer = Buffer.from(match[3], match[2] ? "base64" : "utf8");
-    const ext = IMAGE_EXT_BY_MIME[match[1]] ?? ".png";
+    if (buffer.length > 8 * 1024 * 1024) throw new Error("Reference exceeds 8 MB");
+    const ext = IMAGE_EXT_BY_MIME[match[1]];
     const fileName = `reference-${index + 1}${ext}`;
     fs.writeFileSync(path.join(sceneDir, fileName), buffer);
     saved.push(fileName);
+    references.push({ file: fileName, name: String(image.name ?? fileName), mime: match[1] });
   });
 
   const record = {
     description: String(brief.description ?? "").trim(),
     images: saved,
+    references,
     createdAt: new Date().toISOString(),
   };
   writeJson(path.join(sceneDir, "brief.json"), record);

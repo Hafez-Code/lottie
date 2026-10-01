@@ -24,6 +24,11 @@ function createScenesService(projectsDir, notifyChanged) {
     if (!resolved.startsWith(path.resolve(projectsDir) + path.sep)) {
       throw new Error("Path escapes the projects directory");
     }
+    let existing = resolved;
+    while (!fs.existsSync(existing)) existing = path.dirname(existing);
+    const realRoot = fs.realpathSync(projectsDir);
+    const realExisting = fs.realpathSync(existing);
+    if (realExisting !== realRoot && !realExisting.startsWith(realRoot + path.sep)) throw new Error("Path escapes the projects directory through a symbolic link");
     return resolved;
   };
 
@@ -59,6 +64,21 @@ function createScenesService(projectsDir, notifyChanged) {
     createScene(path.join(projectDir, sceneSlug));
     notifyChanged?.();
     return { project, scene: sceneSlug };
+  };
+  const saveScene = (project, scene, doc) => {
+    const dir = ensureWithin(path.join(projectsDir, project, scene));
+    if (!fs.existsSync(path.join(dir, "lottie.json"))) throw new Error("Scene not found");
+    if (!doc || typeof doc !== "object" || !Array.isArray(doc.layers)) throw new Error("Invalid Lottie document");
+    writeJson(path.join(dir, "lottie.json"), doc);
+    notifyChanged?.();
+    return { ok: true };
+  };
+  const deleteScene = (project, scene) => {
+    const dir = ensureWithin(path.join(projectsDir, project, scene));
+    if (!fs.existsSync(path.join(dir, "lottie.json"))) throw new Error("Scene not found");
+    fs.rmSync(dir, { recursive: true });
+    notifyChanged?.();
+    return { ok: true };
   };
 
   /**
@@ -156,7 +176,7 @@ function createScenesService(projectsDir, notifyChanged) {
     return { ok: true, sid };
   };
 
-  return { listProjects, getScene, createProject, deleteProject, createSceneInProject, createSceneFromBrief, listSlots, setSlotValue };
+  return { listProjects, getScene, createProject, deleteProject, createSceneInProject, createSceneFromBrief, listSlots, setSlotValue, saveScene, deleteScene };
 }
 
 module.exports = { createScenesService };

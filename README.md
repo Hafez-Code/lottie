@@ -23,6 +23,23 @@
 </table>
 
 ## Quick Start 
+
+### Desktop studio workflow
+
+Run `npm run electron:dev` for the desktop app, or `npm run dev` for the browser workspace. The desktop app can choose a projects folder; that folder contains `<project>/<scene>/lottie.json`. Installed builds keep the default projects in the user's application data directory.
+
+Choose a discovered Codex, Claude Code or OpenCode CLI after signing in through that tool, or expand **Use an OpenAI API key** and enter a key plus a model supporting image input and JSON output. Desktop credentials use Electron's encrypted system storage; browser development keeps the key only in server memory. API generation and its rendered-frame review use API quota.
+
+Describe a new scene and attach images, GIFs or video. Sending opens scene chat and starts the chosen runner. Existing projects can be selected explicitly. Scene conversations survive reopening, and follow-ups can include references, a selected layer and the current frame. Runs can be stopped or retried.
+
+Use **Inspect canvas** to select a top-level layer, or choose it from the layer list. Nested precomposition elements are not individually selectable yet; scenes with track mattes use the list. Agents can request a rendered frame through the `capture_scene` MCP tool or `POST /api/chat/capture`. Keep the target scene open for rendering. A saved animation or a single captured frame does not by itself verify animation timing.
+
+Run `npm run check:workflow` for offline runner/API regression checks, and `npm run check:text-slots` for the existing text checks. Change records live in [versions](versions/README.md).
+
+CLI integration follows the official [Codex non-interactive guide](https://developers.openai.com/codex/noninteractive), [Claude Code programmatic guide](https://code.claude.com/docs/en/headless), and [OpenCode CLI guide](https://opencode.ai/docs/cli/). API requests use [OpenAI Responses with image inputs](https://developers.openai.com/api/docs/guides/images-vision).
+
+### External coding agents
+
 Install the skill:
 ```bash
 npx skills add diffusionstudio/lottie
@@ -127,3 +144,9 @@ import 'package:lottie/lottie.dart';
 
 Lottie.asset('assets/animation.json')
 ```
+
+### Multi-frame agent verification
+
+Studio ProMax exposes `capture_scene_frames` over MCP and `POST /api/chat/capture-frames` with `{ project, scene, frames? }`. Omit `frames` to sample the beginning, middle and final frame. Up to 12 integer frames are allowed, relative to the first scene frame; the scene must be open. The returned labelled contact sheet and unique PNG path let agents inspect several positions without overwriting earlier captures. `check_scene` reports Lottie structural issues and statistics; it does not establish visual correctness. OpenAI API runs request the sampled sheet for their visual review.
+
+Contact sheet planning includes adapted MPL-2.0 code from diffusionstudio/editor. Source, attribution and license are in `src/vendor/diffusionstudio/` and included in desktop packaging.

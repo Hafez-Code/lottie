@@ -30,3 +30,7 @@ canvaskit.wasm
 
 # Skills
 .claude
+
+# Local conversations and rendered previews
+**/.studio/
+*.tsbuildinfo

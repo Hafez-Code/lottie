@@ -6,6 +6,8 @@ const path = require("node:path");
 const { AGENTS, detectInstalledAgents } = require("../shared/agents.cjs");
 const { handleMcpRequest } = require("./services/mcp.cjs");
 const { createScenesService } = require("./services/scenes.cjs");
+const { createChatService } = require("./services/chat.cjs");
+const { handleChatRequest } = require("./services/chat-http.cjs");
 
 /**
  * The local service server. One HTTP listener on 127.0.0.1:<port>:
@@ -37,12 +39,12 @@ async function readJsonBody(req) {
   }
 }
 
-function createServerOnce({ appRoot, isDev }) {
-  const projectsDir = isDev
+function createServerOnce({ appRoot, isDev, workspaceDir, dataDir = appRoot, rendererOrigin, getProvider, setProvider }) {
+  let projectsDir = workspaceDir ?? (isDev
     ? path.join(appRoot, "public", "projects")
-    : path.join(process.resourcesPath ?? appRoot, "public", "projects");
+    : path.join(process.resourcesPath ?? appRoot, "public", "projects"));
 
-  const agentsStateFile = path.join(appRoot, ".agents-state.json");
+  const agentsStateFile = path.join(dataDir, ".agents-state.json");
   const startedAt = new Date().toISOString();
 
   function defaultAgents() {
@@ -64,8 +66,10 @@ function createServerOnce({ appRoot, isDev }) {
   let agents = loadAgents();
   let port = PORT_BASE;
   let onOpenScene = null; // wired by main.cjs after window creation
+  let httpServer = null; // the live listener, so close() can tear it down
 
-  const scenes = createScenesService(projectsDir, () => void 0);
+  let scenes = createScenesService(projectsDir, () => void 0);
+  let chat = createChatService({ projectsDir, getBaseUrl: () => `http://127.0.0.1:${port}`, allowedOrigin: rendererOrigin, getProvider, setProvider });
 
   const openScene = (project, scene) => {
     const tree = scenes.listProjects();
@@ -91,17 +95,28 @@ function createServerOnce({ appRoot, isDev }) {
   });
 
   const mcpDeps = {
-    listProjects: scenes.listProjects,
+    listProjects: () => scenes.listProjects(),
     getScene: (project, scene) => ({ project, scene, lottie: scenes.getScene(project, scene) }),
     createProject: (name) => scenes.createProject(name ?? "Untitled project"),
-    deleteProject: scenes.deleteProject,
+    deleteProject: (project) => scenes.deleteProject(project),
     openScene,
-    listSlots: scenes.listSlots,
-    setSlotValue: scenes.setSlotValue,
+    listSlots: (...args) => scenes.listSlots(...args),
+    setSlotValue: (...args) => scenes.setSlotValue(...args),
+    captureFrames: (project, scene, frames) => chat.requestFilmstrip(project, scene, frames),
+    captureScene: (project, scene, frame) => chat.requestCapture(project, scene, frame),
   };
 
   async function handle(req, res) {
     const url = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
+    const origin = req.headers.origin;
+    if (origin && (origin === rendererOrigin || origin === `http://${req.headers.host}`)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+      res.setHeader("Vary", "Origin");
+      if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
+    } else if (origin && url.pathname.startsWith("/api/")) { return json(res, 403, { error: "Origin not allowed" }); }
+    if (await handleChatRequest(req, res, chat)) return;
 
     // --- MCP over Streamable HTTP -------------------------------------------
     if (url.pathname === "/mcp") {
@@ -149,6 +164,25 @@ function createServerOnce({ appRoot, isDev }) {
     if (url.pathname === "/api/scenes" && req.method === "POST") {
       const body = await readJsonBody(req);
       return json(res, 201, scenes.createSceneInProject(String(body.project ?? "")));
+    }
+    if (url.pathname === "/api/scenes" && req.method === "DELETE") {
+      const body = await readJsonBody(req);
+      return json(res, 200, scenes.deleteScene(String(body.project), String(body.scene)));
+    }
+    if (url.pathname === "/api/lottie" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      return json(res, 200, scenes.saveScene(String(body.project), String(body.scene), body.doc));
+    }
+    if (url.pathname === "/scenes.json") return json(res, 200, scenes.listProjects());
+    if (url.pathname.startsWith("/projects/")) {
+      const file = path.resolve(projectsDir, decodeURIComponent(url.pathname.slice("/projects/".length)));
+      const root = fs.realpathSync(projectsDir);
+      if (file.startsWith(path.resolve(projectsDir) + path.sep) && fs.existsSync(file) && fs.realpathSync(file).startsWith(root + path.sep) && fs.statSync(file).isFile()) {
+        const types = { ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml", ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime" };
+        res.writeHead(200, { "Content-Type": types[path.extname(file)] ?? "application/octet-stream" });
+        fs.createReadStream(file).pipe(res); return;
+      }
+      return json(res, 404, { error: "Asset not found" });
     }
 
     // Create a scene from a chat brief (description + reference images).
@@ -228,6 +262,7 @@ function createServerOnce({ appRoot, isDev }) {
             }
           });
         });
+        httpServer = server;
         let attempt = 0;
         let settling = false;
         const tryPort = () => {
@@ -248,6 +283,14 @@ function createServerOnce({ appRoot, isDev }) {
         tryPort();
       });
     },
+    /** Stop listening and release the port. Resolves true when a server was closed. */
+    close() {
+      chat.close();
+      const server = httpServer;
+      httpServer = null;
+      if (!server) return Promise.resolve(false);
+      return new Promise((resolve) => server.close(() => resolve(true)));
+    },
     setOpenSceneHandler(fn) {
       onOpenScene = fn;
     },
@@ -262,6 +305,15 @@ function createServerOnce({ appRoot, isDev }) {
     getAgents: () => ({ ...agents }),
     getStatus: buildStatus,
     getPort: () => port,
+    setWorkspace(dir) {
+      if (chat.hasRunning()) throw new Error("Stop the running agents before changing the projects folder.");
+      chat.close();
+      fs.mkdirSync(dir, { recursive: true });
+      projectsDir = fs.realpathSync(dir);
+      scenes = createScenesService(projectsDir, () => void 0);
+      chat = createChatService({ projectsDir, getBaseUrl: () => `http://127.0.0.1:${port}`, allowedOrigin: rendererOrigin, getProvider, setProvider });
+      return { projectsDir };
+    },
   };
 }
 

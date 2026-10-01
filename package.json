@@ -1,6 +1,6 @@
 {
   "name": "text-to-lottie",
-  "productName": "Diffusion Studio",
+  "productName": "Studio ProMax",
   "private": true,
   "version": "1.0.0",
   "license": "MIT",
@@ -13,11 +13,13 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "check:text-slots": "node --experimental-strip-types --test scripts/text-slot-unicode.test.mjs",
+    "check:workflow": "node --test scripts/chat-service.test.cjs scripts/api-provider.test.cjs scripts/scene-inspection.test.cjs scripts/agent-review.test.cjs scripts/agent-review-verified.test.cjs",
     "preview": "vite preview",
     "electron:dev": "node scripts/electron-dev.mjs",
     "electron:start": "npm run build && electron .",
     "dist:mac": "npm run build && electron-builder --mac dir",
-    "postinstall": "node scripts/copy-canvaskit.mjs"
+    "postinstall": "node scripts/copy-canvaskit.mjs",
+    "check:contact-sheet": "node --experimental-strip-types --test scripts/contact-sheet.test.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.8",

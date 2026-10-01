@@ -11,21 +11,25 @@ import {
 import { useScenes } from "@/context/scenes";
 import { getThumbnail } from "@/lib/thumbnails";
 import { Scene } from "@/types";
+import { studioFetch } from "@/lib/studio-api";
+import { isDesktop } from "@/lib/desktop";
 
 export function ScenesContainer() {
   const params = useParams();
   const navigate = useNavigate();
-  const { findProject } = useScenes();
+  const { findProject, refresh } = useScenes();
 
   const scenes = () => (params.project ? findProject(params.project)?.scenes ?? [] : []);
 
   const deleteScene = async (scene: Scene) => {
     if (!params.project) return;
-    await fetch("/__scenes/scene", {
+    const res = await studioFetch(isDesktop() ? "/api/scenes" : "/__scenes/scene", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ project: params.project, scene: scene.slug }),
     });
+    if (!res.ok) return;
+    await refresh();
     // If the active scene was removed, fall back to another scene in the project
     // (or the default route if none remain). The tree refreshes over HMR.
     if (scene.slug === params.scene) {
@@ -36,17 +40,19 @@ export function ScenesContainer() {
 
   const addScene = async () => {
     if (!params.project) return;
-    const res = await fetch("/__scenes/scene", {
+    const res = await studioFetch(isDesktop() ? "/api/scenes" : "/__scenes/scene", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ project: params.project }),
     });
+    if (!res.ok) return;
     const { project, scene } = (await res.json()) as { project: string; scene: string };
+    await refresh();
     navigate(`/${project}/${scene}`);
   };
 
   return (
-    <div class="flex items-start justify-center gap-4">
+    <div class="flex w-full items-start gap-4 overflow-x-auto">
       <For each={scenes()}>
         {(scene) => (
           <SceneItem

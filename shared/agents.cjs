@@ -92,23 +92,28 @@ const DETECT = {
 };
 
 /** True when one of `names` resolves to an executable on PATH. */
-function isExecutableOnPath(names) {
-  if (!names.length) return false;
-  const dirs = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+function findExecutable(names) {
+  const dirs = [...new Set([
+    ...(process.env.PATH ?? "").split(path.delimiter).filter(Boolean),
+    path.join(HOME, ".local", "bin"), path.join(HOME, ".opencode", "bin"),
+    "/opt/homebrew/bin", "/usr/local/bin",
+  ])];
   const candidates =
     process.platform === "win32"
       ? names.flatMap((name) => [`${name}.cmd`, `${name}.exe`, name])
       : names;
-  return candidates.some((bin) =>
-    dirs.some((dir) => {
+  for (const bin of candidates) {
+    for (const dir of dirs) {
       try {
-        fs.accessSync(path.join(dir, bin), fs.constants.X_OK);
-        return true;
+        const file = path.join(dir, bin);
+        fs.accessSync(file, fs.constants.X_OK);
+        if (fs.statSync(file).isFile()) return file;
       } catch {
-        return false;
+        // Try the next installation location.
       }
-    }),
-  );
+    }
+  }
+  return null;
 }
 
 /**
@@ -127,10 +132,24 @@ function detectInstalledAgents() {
       const hint = DETECT[agent.id] ?? { bins: [], paths: [] };
       const candidates = [agent.configPath, ...hint.paths.map((p) => path.join(HOME, p))];
       const installed =
-        candidates.some((file) => fs.existsSync(file)) || isExecutableOnPath(hint.bins);
+        candidates.some((file) => fs.existsSync(file)) || !!findExecutable(hint.bins);
       return [agent.id, installed];
     }),
   );
 }
 
-module.exports = { AGENTS, detectInstalledAgents };
+const RUNNABLE_AGENTS = [
+  { id: "codex", label: "Codex", bin: "codex" },
+  { id: "claude-code", label: "Claude Code", bin: "claude" },
+  { id: "opencode", label: "OpenCode", bin: "opencode" },
+];
+
+function discoverRunners() {
+  const detected = detectInstalledAgents();
+  return RUNNABLE_AGENTS.map(({ id, label, bin }) => ({
+    id, label, detected: !!detected[id], executable: !!findExecutable([bin]),
+    status: findExecutable([bin]) ? "available" : detected[id] ? "configuration-only" : "not-installed",
+  }));
+}
+
+module.exports = { AGENTS, detectInstalledAgents, findExecutable, discoverRunners, RUNNABLE_AGENTS };

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Diffusion Studio CLI — gives agents and terminal users access to a running
- * Diffusion Studio app over its local service server (see electron/server.cjs).
+ * Studio ProMax CLI — gives agents and terminal users access to a running
+ * Studio ProMax app over its local service server (see electron/server.cjs).
  *
  *   diffusion-studio connect [--agent id ...] [--all] [--remove]
  *   diffusion-studio status
@@ -166,7 +166,7 @@ function writeAgentConfig(agent, url, remove) {
 
 async function cmdConnect() {
   const server = await findServer();
-  if (!server) die("Diffusion Studio is not running.", "Start the desktop app first, then retry.");
+  if (!server) die("Studio ProMax is not running.", "Start the desktop app first, then retry.");
 
   const remove = args.includes("--remove");
   const all = args.includes("--all");
@@ -220,9 +220,9 @@ async function cmdConnect() {
 
 async function cmdStatus() {
   const server = await findServer();
-  if (!server) die("Diffusion Studio is not running.", "Start the desktop app first, then retry.");
+  if (!server) die("Studio ProMax is not running.", "Start the desktop app first, then retry.");
   const s = server.status;
-  console.log(`Diffusion Studio ${s.version} (dev: ${s.dev ? "yes" : "no"})`);
+  console.log(`Studio ProMax ${s.version} (dev: ${s.dev ? "yes" : "no"})`);
   console.log(`Port:        ${s.port}`);
   console.log(`MCP:         ${s.mcp}`);
   console.log(`Projects:    ${s.projectsDir}`);
@@ -235,7 +235,7 @@ async function cmdStatus() {
 
 async function cmdProjects(action) {
   const server = await findServer();
-  if (!server) die("Diffusion Studio is not running.", "Start the desktop app first, then retry.");
+  if (!server) die("Studio ProMax is not running.", "Start the desktop app first, then retry.");
 
   if (action === "list" || !action) {
     const tree = await api(server, "GET", "/api/projects");
@@ -267,7 +267,7 @@ async function cmdProjects(action) {
 
 async function cmdScenes(action) {
   const server = await findServer();
-  if (!server) die("Diffusion Studio is not running.", "Start the desktop app first, then retry.");
+  if (!server) die("Studio ProMax is not running.", "Start the desktop app first, then retry.");
 
   const rest = args.slice(args.indexOf(action ?? "") + 1).filter(Boolean);
 
@@ -299,7 +299,7 @@ async function cmdScenes(action) {
 
 async function cmdSlots(action) {
   const server = await findServer();
-  if (!server) die("Diffusion Studio is not running.", "Start the desktop app first, then retry.");
+  if (!server) die("Studio ProMax is not running.", "Start the desktop app first, then retry.");
   const rest = args.slice(args.indexOf("list") >= 0 ? args.indexOf("list") : args.indexOf("set") + 1).filter(Boolean);
 
   if (action === "list") {
@@ -334,6 +334,40 @@ async function cmdSlots(action) {
   die(`Unknown action: ${action}`);
 }
 
+async function cmdInspect(action) {
+  const [project, scene] = args.slice(args.indexOf(action) + 1);
+  if (!project || !scene) die(`Usage: diffusion-studio scenes ${action} <project> <scene>`);
+  const server = await findServer();
+  if (!server) die("Studio ProMax is not running.", "Start the desktop app first, then retry.");
+  const result = await api(server, "POST", "/mcp", {
+    jsonrpc: "2.0", id: 1, method: "tools/call", params: {
+      name: action === "capture" ? "capture_scene_frames" : "check_scene",
+      arguments: { project, scene, ...(value("--frames") !== undefined ? { frames: value("--frames").split(",").map(Number) } : {}) },
+    },
+  });
+  if (result.error || result.result?.isError) throw new Error(result.error?.message ?? result.result.content?.[0]?.text ?? "Tool failed");
+  console.log(JSON.stringify(result.result.structuredContent, null, 2));
+  if (action === "check" && result.result.structuredContent.issues?.some((issue) => issue.severity === "error")) process.exitCode = 1;
+}
+
+const USAGE = `
+diffusion-studio — control a running Studio ProMax app from the terminal
+
+  diffusion-studio connect [--all] [--agent <id>...] [--remove]
+      Write the MCP server entry into each agent's config file. Defaults to the
+      agents enabled in Settings → MCP & CLI that are detected as installed here.
+
+  diffusion-studio status
+  diffusion-studio projects list | create <name> | delete <slug>
+  diffusion-studio scenes get <project> <scene> [-o out.json] | open <project> <scene>
+  diffusion-studio scenes capture <project> <scene> [--frames 0,30,59]
+  diffusion-studio scenes check <project> <scene>
+  diffusion-studio slots list <project> <scene>
+  diffusion-studio slots set <project> <scene> <sid> [--text s | --number n | --color #rrggbb | --vec2 x,y]
+
+Agent ids: ${AGENTS.map((a) => a.id).join(", ")}
+`.trim();
+
 /* ------------------------------------------------------------------ main */
 
 const [command, ...commandArgs] = args;
@@ -343,7 +377,7 @@ try {
     case "connect": void cmdConnect(); break;
     case "status": void cmdStatus(); break;
     case "projects": void cmdProjects(commandArgs[0]); break;
-    case "scenes": void cmdScenes(commandArgs[0]); break;
+    case "scenes": if (["capture", "check"].includes(commandArgs[0])) await cmdInspect(commandArgs[0]); else await cmdScenes(commandArgs[0]); break;
     case "slots": void cmdSlots(commandArgs[0]); break;
     case "help":
     case "--help":
@@ -357,19 +391,3 @@ try {
 } catch (error) {
   die(error instanceof Error ? error.message : String(error));
 }
-
-const USAGE = `
-diffusion-studio — control a running Diffusion Studio app from the terminal
-
-  diffusion-studio connect [--all] [--agent <id>...] [--remove]
-      Write the MCP server entry into each agent's config file. Defaults to the
-      agents enabled in Settings → MCP & CLI that are detected as installed here.
-
-  diffusion-studio status
-  diffusion-studio projects list | create <name> | delete <slug>
-  diffusion-studio scenes get <project> <scene> [-o out.json] | open <project> <scene>
-  diffusion-studio slots list <project> <scene>
-  diffusion-studio slots set <project> <scene> <sid> [--text s | --number n | --color #rrggbb | --vec2 x,y]
-
-Agent ids: ${AGENTS.map((a) => a.id).join(", ")}
-`.trim();

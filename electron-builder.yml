@@ -1,11 +1,12 @@
 appId: studio.diffusion.lottie
-productName: Diffusion Studio
+productName: Studio ProMax
 directories:
   output: release
 files:
   - dist/**/*
   - electron/**/*
   - shared/**/*
+  - src/vendor/diffusionstudio/**/*
   - "!**/*.map"
 extraResources:
   - from: public

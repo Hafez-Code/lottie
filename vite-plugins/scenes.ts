@@ -1,8 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import type { Plugin } from "vite";
 import type { Scene, Project, ScenesTree } from "../src/types/common";
 import type { IncomingMessage, ServerResponse } from "node:http";
+
+const require = createRequire(import.meta.url);
+const { createChatService } = require("../electron/services/chat.cjs");
+const { handleChatRequest } = require("../electron/services/chat-http.cjs");
+const { writeSceneBrief: persistBrief } = require("../electron/services/scenes-lib.cjs");
+const { handleMcpRequest } = require("../electron/services/mcp.cjs");
+const { createScenesService } = require("../electron/services/scenes.cjs");
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"]);
 const FONT_EXTENSIONS = new Set([".ttf", ".otf", ".ttc"]);
@@ -57,7 +65,7 @@ function nextSceneSlug(projectDir: string): string {
   return `scene-${max + 1}`;
 }
 
-/** Minimal Bodymovin scene: a single `w`x`h` background rect filled with `hex`. */
+/** Minimal Bodymovin scene: a `w`x`h` background rect exposing an editable bgColor slot. */
 function defaultLottie(w: number, h: number, hex: string): unknown {
   const r = Number.parseInt(hex.slice(1, 3), 16) / 255;
   const g = Number.parseInt(hex.slice(3, 5), 16) / 255;
@@ -70,6 +78,10 @@ function defaultLottie(w: number, h: number, hex: string): unknown {
     w,
     h,
     assets: [],
+    // Full-frame scenes expose their background as a color slot (output rubric).
+    slots: {
+      bgColor: { p: { a: 0, k: [r, g, b, 1] } },
+    },
     layers: [
       {
         ty: 4,
@@ -90,7 +102,7 @@ function defaultLottie(w: number, h: number, hex: string): unknown {
             nm: "background-group",
             it: [
               { ty: "rc", p: { a: 0, k: [0, 0] }, s: { a: 0, k: [w, h] }, r: { a: 0, k: 0 } },
-              { ty: "fl", c: { a: 0, k: [r, g, b, 1] }, o: { a: 0, k: 100 } },
+              { ty: "fl", c: { sid: "bgColor" }, o: { a: 0, k: 100 } },
               {
                 ty: "tr",
                 p: { a: 0, k: [0, 0] },
@@ -114,6 +126,11 @@ function createScene(sceneDir: string): void {
     path.join(sceneDir, "lottie.json"),
     JSON.stringify(defaultLottie(512, 512, "#262626"), null, 2),
   );
+  // Give the scene one control out of the box so it is editable on arrival.
+  fs.writeFileSync(
+    path.join(sceneDir, "controls.json"),
+    JSON.stringify({ controls: [{ sid: "bgColor", label: "Background" }] }, null, 2) + "\n",
+  );
 }
 
 const IMAGE_EXT_BY_MIME: Record<string, string> = {
@@ -131,34 +148,7 @@ const IMAGE_EXT_BY_MIME: Record<string, string> = {
  * so the connected agent can read the description + images over MCP.
  */
 function writeSceneBrief(sceneDir: string, brief: Record<string, unknown>): string[] {
-  fs.mkdirSync(sceneDir, { recursive: true });
-  const images = Array.isArray(brief.images) ? brief.images : [];
-  const saved: string[] = [];
-
-  images.forEach((entry, index) => {
-    const dataUrl = String((entry as { dataUrl?: unknown })?.dataUrl ?? "");
-    const match = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/.exec(dataUrl);
-    if (!match) return;
-    const buffer = Buffer.from(match[3], match[2] ? "base64" : "utf8");
-    const ext = IMAGE_EXT_BY_MIME[match[1] ?? ""] ?? ".png";
-    const fileName = `reference-${index + 1}${ext}`;
-    fs.writeFileSync(path.join(sceneDir, fileName), buffer);
-    saved.push(fileName);
-  });
-
-  fs.writeFileSync(
-    path.join(sceneDir, "brief.json"),
-    JSON.stringify(
-      {
-        description: String(brief.description ?? "").trim(),
-        images: saved,
-        createdAt: new Date().toISOString(),
-      },
-      null,
-      2,
-    ) + "\n",
-  );
-  return saved;
+  return persistBrief(sceneDir, brief).images;
 }
 
 function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -325,6 +315,20 @@ export function scenesPlugin(): Plugin {
     },
 
     configureServer(server) {
+      let provider: { apiKey: string; model: string } | null = null;
+      const chat = createChatService({ projectsDir, getBaseUrl: () => server.resolvedUrls?.local[0]?.replace(/\/$/, "") ?? "", getProvider: () => provider, setProvider: (next: typeof provider) => { provider = next; } });
+      const sceneService = createScenesService(projectsDir, () => void 0);
+      const mcpDeps = { ...sceneService,
+        getScene: (project: string, scene: string) => ({ project, scene, lottie: sceneService.getScene(project, scene) }),
+        openScene: (project: string, scene: string) => ({ project, scene, url: `/${project}/${scene}` }),
+        captureFrames: (project: string, scene: string, frames?: number[]) => chat.requestFilmstrip(project, scene, frames),
+        captureScene: (project: string, scene: string, frame: number) => chat.requestCapture(project, scene, frame),
+      };
+      server.httpServer?.once("close", () => chat.close());
+      server.middlewares.use((req, res, next) => {
+        const handler = req.url?.split("?")[0] === "/mcp" ? handleMcpRequest(req, res, mcpDeps) : handleChatRequest(req, res, chat);
+        void handler.then((handled: boolean) => { if (!handled) next(); }).catch(next);
+      });
       const json = (res: ServerResponse, status: number, body: unknown) => {
         res.statusCode = status;
         res.setHeader("Content-Type", "application/json");

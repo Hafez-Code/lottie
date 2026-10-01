@@ -1,4 +1,6 @@
 import { unzipSync, strFromU8 } from "fflate";
+import { studioFetch } from "./studio-api";
+import { isDesktop } from "./desktop";
 
 /**
  * Parse a dropped Lottie file into a Bodymovin document.
@@ -29,7 +31,7 @@ export async function createSceneFromDoc(
   project: string,
   doc: Record<string, unknown>,
 ): Promise<{ project: string; scene: string }> {
-  const created = await fetch("/__scenes/scene", {
+  const created = await studioFetch(isDesktop() ? "/api/scenes" : "/__scenes/scene", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project }),
@@ -37,7 +39,7 @@ export async function createSceneFromDoc(
   if (!created.ok) throw new Error(`Failed to create scene (HTTP ${created.status})`);
   const { project: proj, scene } = (await created.json()) as { project: string; scene: string };
 
-  const saved = await fetch("/__scenes/lottie", {
+  const saved = await studioFetch(isDesktop() ? "/api/lottie" : "/__scenes/lottie", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project: proj, scene, doc }),

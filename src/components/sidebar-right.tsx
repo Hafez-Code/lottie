@@ -28,6 +28,7 @@ function hexToRgb(hex: string): [number, number, number] {
 }
 
 export function SidebarRight() {
+  const { layers, selectedLayer, selectLayer, inspecting, toggleInspect, inspectError } = useCanvas();
   const { slots, zoom, controls, setScalarSlot, setColorSlot, setVec2Slot, setTextSlot, commitSource, zoomByCentered, resetCamera } = useCanvas();
   const params = useParams();
   const { findProject } = useScenes();
@@ -80,6 +81,20 @@ export function SidebarRight() {
           Export
         </Button>
       </div>
+
+      <Show when={controlsExpanded()}>
+        <Group title="Inspect layers">
+          <Button variant="secondary" aria-pressed={inspecting()} onClick={toggleInspect}>{inspecting() ? "Inspect active" : "Inspect canvas"}</Button>
+          <p class="text-[10px] leading-relaxed text-muted-foreground">Click the canvas or select a top-level layer to include it in your next message.</p>
+          <Show when={inspectError()}><p class="text-xs text-destructive" role="alert">{inspectError()}</p></Show>
+          <div class="max-h-48 overflow-y-auto">
+            <For each={layers()}>{(layer) => <button type="button" aria-pressed={selectedLayer()?.index === layer.index}
+              class="mb-1 block w-full truncate rounded-md px-2 py-1.5 text-left text-xs focus-ring hover:bg-muted"
+              classList={{ "bg-muted text-foreground": selectedLayer()?.index === layer.index }} onClick={() => selectLayer(selectedLayer()?.index === layer.index ? null : layer)}>{layer.name}</button>}</For>
+            <Show when={layers().length === 0}><p class="text-xs text-muted-foreground">No layers in this scene.</p></Show>
+          </div>
+        </Group>
+      </Show>
 
       <Show when={controlsExpanded() && slots().length > 0}>
         <Group title="Properties">

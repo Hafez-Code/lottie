@@ -14,18 +14,20 @@ import { Icon } from "@/components/ui/icon";
 import { useScenes } from "@/context/scenes";
 import { useAccount } from "@/context/account";
 import { getThumbnail } from "@/lib/thumbnails";
-import { createSceneFromBrief, fileToDataUrl, type BriefImage } from "@/lib/brief";
+import { createSceneFromBrief } from "@/lib/brief";
+import { prepareReference, briefReferences, type Reference } from "@/lib/references";
 import { isDesktop } from "@/lib/desktop";
 import type { Project } from "@/types";
+import { AgentPicker } from "@/components/agent-picker";
+import { chatRequest, selectedAgent } from "@/lib/chat";
+import { studioFetch } from "@/lib/studio-api";
 
 const RECENTS_KEY = "diffusion.recents.v1";
 
 /** Reference images carried with a chat brief; capped to keep request bodies sane. */
 const MAX_IMAGES = 4;
 
-interface Attachment extends BriefImage {
-  id: string;
-}
+type Attachment = Reference;
 
 type RecentsMap = Record<string, number>; // project slug -> last opened epoch ms
 
@@ -103,24 +105,34 @@ const ProjectCard: Component<{ project: Project }> = (props) => {
 
 export function HomePage() {
   const navigate = useNavigate();
-  const { projects, ready } = useScenes();
+  const { projects, ready, refresh } = useScenes();
   const { state, fullName } = useAccount();
   const { toast } = useToast();
 
   const [projectId, setProjectId] = createSignal<string>();
+  const [agent, setAgent] = createSignal(selectedAgent());
+  const [workspacePath, setWorkspacePath] = createSignal("");
+  const chooseWorkspace = async () => {
+    try {
+      const result = await window.diffusionDesktop?.chooseWorkspace();
+      if (result) { setWorkspacePath(result.projectsDir); setProjectId(undefined); await refresh(); }
+    } catch (error) { toast(error instanceof Error ? error.message : "Could not open folder"); }
+  };
   const [prompt, setPrompt] = createSignal("");
   const [images, setImages] = createSignal<Attachment[]>([]);
   const [dragActive, setDragActive] = createSignal(false);
   const [creating, setCreating] = createSignal(false);
   const [sending, setSending] = createSignal(false);
+  const [preparing, setPreparing] = createSignal(false);
   let fileInput: HTMLInputElement | undefined;
 
   const chosenProject = () => projects().find((p) => p.slug === projectId());
 
   const addFiles = async (files: File[]) => {
-    const incoming = files.filter((file) => file.type.startsWith("image/"));
+    if (preparing() || sending()) return;
+    const incoming = files.filter((file) => file.type.startsWith("image/") || file.type.startsWith("video/"));
     if (incoming.length === 0) {
-      toast("Only images can be attached to a brief.");
+      toast("Attach images, GIFs or videos.");
       return;
     }
     const room = MAX_IMAGES - images().length;
@@ -130,15 +142,14 @@ export function HomePage() {
     }
     if (incoming.length > room) toast(`Only the first ${room} image(s) were added.`);
 
-    const next: Attachment[] = [];
-    for (const file of incoming.slice(0, room)) {
-      next.push({
-        id: `${file.name}-${file.lastModified}-${next.length}`,
-        name: file.name,
-        dataUrl: await fileToDataUrl(file),
-      });
-    }
-    setImages((prev) => [...prev, ...next]);
+    setPreparing(true);
+    try {
+      for (const file of incoming.slice(0, room)) {
+        if (images().reduce((total, item) => total + item.size, 0) + file.size > 24 * 1024 * 1024) { toast("Reference files must total 24 MB or less."); break; }
+        try { const next = await prepareReference(file); setImages((prev) => [...prev, next]); }
+        catch (error) { toast(error instanceof Error ? error.message : "Could not prepare reference"); }
+      }
+    } finally { setPreparing(false); }
   };
 
   const removeImage = (id: string) => setImages((prev) => prev.filter((image) => image.id !== id));
@@ -155,7 +166,7 @@ export function HomePage() {
   };
 
   const send = async () => {
-    if (sending()) return;
+    if (sending() || preparing()) return;
     const text = prompt().trim();
     const attachments = images();
     if (!text && attachments.length === 0) {
@@ -164,17 +175,22 @@ export function HomePage() {
     }
 
     // No selected project is fine — the server starts a new one.
-    const target = chosenProject() ?? projects()[0];
+    const target = chosenProject();
+    if (!agent()) { toast("Choose an installed AI agent first."); return; }
     setSending(true);
     try {
       const created = await createSceneFromBrief(target?.slug, {
         description: text,
-        images: attachments.map(({ name, dataUrl }): BriefImage => ({ name, dataUrl })),
+        images: briefReferences(attachments),
       });
       touchRecent(created.project);
       setPrompt("");
       setImages([]);
-      toast(`Scene created in “${target?.label ?? created.project}”.`);
+      await refresh();
+      try {
+        await chatRequest("/run", { project: created.project, scene: created.scene, agent: agent(), useBrief: true });
+        toast("Agent started. Follow its progress in scene chat.");
+      } catch (error) { toast(error instanceof Error ? `Brief saved. ${error.message}` : "Brief saved. Start the agent in scene chat."); }
       navigate(`/${created.project}/${created.scene}`);
     } catch (error) {
       toast(error instanceof Error ? error.message : "Could not create the scene.");
@@ -187,12 +203,14 @@ export function HomePage() {
     if (creating()) return;
     setCreating(true);
     try {
-      const res = await fetch("/__scenes/project", {
+      const res = await studioFetch(isDesktop() ? "/api/projects" : "/__scenes/project", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: "Untitled project" }),
       });
+      if (!res.ok) throw new Error("Could not create project");
       const { project, scene } = (await res.json()) as { project: string; scene: string };
+      await refresh();
       navigate(`/${project}/${scene}`);
     } catch {
       toast("Could not create the project (dev server only).");
@@ -215,7 +233,7 @@ export function HomePage() {
           <div class="flex flex-col gap-4">
             <Icon name="diffusion-logo" class="text-foreground size-8" />
             <div class="flex flex-col gap-0.5">
-              <span class="text-foreground text-sm font-strong">Diffusion Studio</span>
+              <span class="text-foreground text-sm font-strong">Studio ProMax</span>
               <span class="text-muted-foreground text-xxs">v1.0.0</span>
             </div>
           </div>
@@ -238,6 +256,9 @@ export function HomePage() {
               Projects
             </a>
           </nav>
+          <div class="max-h-[40vh] overflow-y-auto">
+            <For each={projects()}>{(p) => <button class="mb-1 block w-full truncate rounded-md px-3 py-2 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground focus-ring" onClick={() => { touchRecent(p.slug); navigate(`/${p.slug}/${p.scenes[0]?.slug ?? ""}`); }}>{p.label}</button>}</For>
+          </div>
         </div>
         <div class="mt-auto flex items-center gap-2 p-6">
           <div class="bg-secondary flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-full">
@@ -289,10 +310,11 @@ export function HomePage() {
                 class="bg-card/80 hover:bg-card ring-foreground/5 mx-auto flex h-9 w-full max-w-xs items-center justify-center gap-1.5 rounded-t-lg px-3 text-xxs ring-1"
               >
                 <Folder class="text-muted-foreground size-3.5" />
-                <span class="text-foreground">{chosenProject()?.label ?? "Choose project"}</span>
+                <span class="text-foreground">{chosenProject()?.label ?? "New project"}</span>
                 <ChevronDown class="text-muted-foreground size-3.5" />
               </DropdownMenuTrigger>
               <DropdownMenuContent class="w-64">
+                <DropdownMenuItem onSelect={() => setProjectId(undefined)}>New project</DropdownMenuItem>
                 <For each={projects()}>
                   {(p) => (
                     <DropdownMenuItem onSelect={() => setProjectId(p.slug)}>
@@ -307,11 +329,17 @@ export function HomePage() {
               </DropdownMenuContent>
             </DropdownMenu>
 
+            <Show when={isDesktop()}>
+              <button type="button" disabled={sending()} onClick={() => void chooseWorkspace()} class="mt-2 w-full truncate rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground focus-ring" title={workspacePath()}>{workspacePath() || "Choose projects folder…"}</button>
+            </Show>
+
+            <div class="px-2 pt-3"><AgentPicker value={agent()} onChange={setAgent} disabled={sending()} /></div>
+
             <Textarea
               value={prompt()}
               onInput={(e) => setPrompt(e.currentTarget.value)}
               onPaste={handlePaste}
-              placeholder="Describe the scene — and drop or paste reference images. e.g. a 3s logo reveal on a dark background."
+              placeholder="Describe the scene and attach images, GIFs or videos. For example, a 3s logo reveal."
               class="border-transparent bg-transparent focus-visible:ring-0 min-h-20 resize-none px-3 pt-3 pb-2 text-xxs leading-relaxed text-foreground placeholder:text-muted-foreground focus-visible:border-transparent"
             />
 
@@ -320,7 +348,7 @@ export function HomePage() {
                 <For each={images()}>
                   {(image) => (
                     <div class="group relative size-14 overflow-hidden rounded-md ring-1 ring-foreground/10">
-                      <img src={image.dataUrl} alt={image.name} class="h-full w-full object-cover" />
+                      <Show when={image.kind === "image"} fallback={<video src={image.dataUrl} class="h-full w-full object-cover" muted preload="metadata" />}><img src={image.dataUrl} alt={image.name} class="h-full w-full object-cover" /></Show>
                       <button
                         type="button"
                         onClick={() => removeImage(image.id)}
@@ -340,16 +368,16 @@ export function HomePage() {
                 variant="ghost"
                 size="icon-sm"
                 onClick={() => fileInput?.click()}
-                disabled={images().length >= MAX_IMAGES}
-                aria-label="Attach reference images"
-                title="Attach reference images"
+                disabled={images().length >= MAX_IMAGES || preparing() || sending()}
+                aria-label="Attach images, GIFs or videos"
+                title="Up to 4 files, 8 MB each, 24 MB total"
               >
                 <ImagePlus class="size-4" />
               </Button>
               <Button
                 size="icon"
                 variant="default"
-                disabled={sending()}
+                disabled={sending() || preparing()}
                 onClick={() => void send()}
                 class="size-8 rounded-full"
                 aria-label="Create scene"
@@ -361,7 +389,7 @@ export function HomePage() {
             <input
               ref={fileInput}
               type="file"
-              accept="image/*"
+              accept="image/*,video/*"
               multiple
               class="hidden"
               onChange={(event) => {
@@ -369,6 +397,7 @@ export function HomePage() {
                 event.currentTarget.value = "";
               }}
             />
+            <Show when={preparing()}><p class="px-2 py-1 text-xs text-muted-foreground" role="status">Preparing references and video frames…</p></Show>
           </div>
 
           {/* Recents */}

@@ -16,6 +16,7 @@ import { McpPage } from "./pages/settings/mcp";
 import { CreditsPage } from "./pages/settings/credits";
 import { BillingPage } from "./pages/settings/billing";
 import { HelpPage } from "./pages/settings/help";
+import { StartupScreen } from "./components/startup-screen";
 
 function Providers(props: { children?: JSX.Element }) {
   return (
@@ -25,7 +26,7 @@ function Providers(props: { children?: JSX.Element }) {
           <CanvasProvider>
             <ToastProvider>
               <DesktopBridgeListener />
-              {props.children}
+              <StartupScreen>{props.children}</StartupScreen>
             </ToastProvider>
           </CanvasProvider>
         </UIProvider>

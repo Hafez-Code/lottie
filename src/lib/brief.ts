@@ -1,4 +1,5 @@
 import { isDesktop } from "@/lib/desktop";
+import { studioFetch } from "./studio-api";
 
 /** A reference image travelling with a chat brief, as a `data:` URL. */
 export interface BriefImage {
@@ -42,7 +43,7 @@ export async function createSceneFromBrief(
   brief: SceneBrief,
 ): Promise<BriefResult> {
   const endpoint = isDesktop() ? "/api/brief" : "/__scenes/brief";
-  const res = await fetch(endpoint, {
+  const res = await studioFetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project: projectSlug ?? "", ...brief }),

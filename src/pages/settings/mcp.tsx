@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/toast";
 import { useAccount } from "@/context/account";
+import { studioFetch, setStudioPort } from "@/lib/studio-api";
 
 const AGENTS: { id: string; label: string }[] = [
   { id: "claude-code", label: "Claude Code" },
@@ -39,14 +40,41 @@ export const McpPage: Component = () => {
   // Live status when the desktop app hosts the page; the plain dev-server
   // build falls back to the default port the desktop app uses.
   const [status, setStatus] = createSignal<ServerStatus | null>(null);
-  onMount(async () => {
+  const [busy, setBusy] = createSignal(false);
+
+  const refreshStatus = async () => {
     try {
-      const res = await fetch("/api/status");
-      if (res.ok) setStatus((await res.json()) as ServerStatus);
+      const local = await window.diffusionDesktop?.services?.status();
+      if (local && !local.running) { setStatus(null); return; }
+      if (local?.port) setStudioPort(local.port);
+      const res = await studioFetch("/api/status");
+      setStatus(res.ok ? ((await res.json()) as ServerStatus) : null);
     } catch {
+      setStatus(null);
       // no local services (plain `vite` without Electron) — keep the fallback
     }
-  });
+  };
+
+  onMount(() => void refreshStatus());
+
+  // Desktop only: the main process can start/stop the server on demand.
+  const services = () => window.diffusionDesktop?.services;
+
+  const toggleServer = async () => {
+    const api = services();
+    if (!api || busy()) return;
+    setBusy(true);
+    try {
+      const next = status() ? await api.stop() : await api.start();
+      if (next.running && next.port) setStudioPort(next.port);
+      if (next.error) toast(next.error);
+      // The port may change on restart; wait a beat for the listener to bind.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await refreshStatus();
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const mcpUrl = () => status()?.mcp ?? "http://127.0.0.1:3274/mcp";
   const serverLive = () => status() != null;
@@ -71,7 +99,7 @@ export const McpPage: Component = () => {
   // from /api/status.
   const syncAgentsToServer = (next: Record<string, boolean>) => {
     if (!serverLive()) return;
-    void fetch("/api/agents", {
+    void studioFetch("/api/agents", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ agents: next }),
@@ -103,7 +131,7 @@ export const McpPage: Component = () => {
         </button>
       </div>
       <p class="text-muted-foreground mb-4 text-xxs">
-        Diffusion Studio connects straight to your coding agent over MCP — no model to pick, the agent
+        Studio ProMax connects straight to your coding agent over MCP — no model to pick, the agent
         brings its own. Agents installed on this machine are detected automatically.
         <Show when={serverLive()}>
           {" "}Running on port {status()!.port} · {detectedCount()} of {AGENTS.length} detected.
@@ -141,7 +169,7 @@ export const McpPage: Component = () => {
       <div class="bg-card ring-foreground/5 mb-2 flex items-center gap-3 rounded-xl px-4 py-3 ring-1">
         <span class="bg-muted flex size-8 items-center justify-center rounded-md text-xxs">⚡</span>
         <div class="flex flex-1 flex-col">
-          <span class="text-foreground text-xxs font-strong">Diffusion Studio MCP</span>
+          <span class="text-foreground text-xxs font-strong">Studio ProMax MCP</span>
           <span class="text-muted-foreground text-xxs">
             Connect any other agent that supports MCP over Streamable HTTP.
           </span>
@@ -149,21 +177,27 @@ export const McpPage: Component = () => {
         <span
           class="size-2 rounded-full bg-success-accent"
           classList={{ "bg-muted-foreground/40": !serverLive() }}
-          title={serverLive() ? "Server running" : "Start the desktop app to enable this"}
+          title={serverLive() ? "Server running" : "Local services are stopped"}
         />
+        <Show when={services()}>
+          <Button variant="outline" size="sm" disabled={busy()} onClick={() => void toggleServer()}>
+            {serverLive() ? "Stop" : "Start"}
+          </Button>
+        </Show>
         <code class="bg-muted text-muted-foreground rounded-md px-2 py-1 text-xxs">{mcpUrl()}</code>
         <Button variant="outline" size="sm" onClick={() => copy(mcpUrl(), "MCP URL")}>
           <Copy /> Copy URL
         </Button>
       </div>
       <p class="text-muted-foreground mb-10 text-xxs">
-        Available locally while Diffusion Studio is running. <span class="text-primary underline">What is MCP?</span>
+        Available locally while Studio ProMax is running. Starts on demand — use the button above
+        or the app menu (Local Services). <span class="text-primary underline">What is MCP?</span>
       </p>
 
       {/* CLI */}
       <h2 class="text-foreground mb-4 text-sm font-strong">CLI</h2>
       <p class="text-muted-foreground mb-3 text-xxs">
-        Give agents access to Diffusion Studio through terminal commands.
+        Give agents access to Studio ProMax through terminal commands.
       </p>
       <div class="divide-border bg-card ring-foreground/5 mb-3 flex flex-col divide-y rounded-xl ring-1">
         <For each={CLI_COMMANDS}>
